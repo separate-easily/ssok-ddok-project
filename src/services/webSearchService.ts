@@ -18,6 +18,8 @@ import {
 
 // ==================== Configuration ====================
 
+const isBrowser = typeof window !== "undefined";
+
 // Node.js (tsx) 환경과 Vite 브라우저 환경 모두 지원
 const getEnvVar = (key: string): string => {
   if (typeof import.meta !== "undefined" && (import.meta as any).env?.[key]) {
@@ -30,9 +32,10 @@ const getEnvVar = (key: string): string => {
 };
 
 const SEARCH_CONFIG = {
-  // 환경 변수에서 API 키 로드
-  apiKey: getEnvVar("VITE_SEARCH_API_KEY"),
-  searchEngineId: getEnvVar("VITE_SEARCH_ENGINE_ID"),
+  // 브라우저에서는 사용하지 않음 (Functions 프록시가 서버 secret으로 보관).
+  // Node(tsx 회귀 테스트 스크립트) 전용 키 — VITE_ 접두사가 없어 브라우저 번들에는 포함되지 않는다.
+  apiKey: getEnvVar("SEARCH_API_KEY"),
+  searchEngineId: getEnvVar("SEARCH_ENGINE_ID"),
 
   // 검색 설정
   maxResults: 5,
@@ -259,9 +262,54 @@ interface GoogleSearchResponse {
 }
 
 /**
- * Google Custom Search API 호출
+ * 검색 API 응답(raw items)을 WebSearchResult로 변환
+ */
+function mapGoogleItems(
+  items: Array<{ title: string; link: string; displayLink: string; snippet: string }>,
+  query: string
+): WebSearchResult[] {
+  return items.map(item => ({
+    title: item.title,
+    url: item.link,
+    domain: item.displayLink,
+    snippet: item.snippet,
+    relevance_score: calculateRelevanceScore(item, query),
+    credibility: evaluateDomainCredibility(item.displayLink),
+    is_government: isGovernmentDomain(item.displayLink),
+    is_pyeongtaek: isPyeongtaekDomain(item.displayLink)
+  }));
+}
+
+/**
+ * Google Custom Search 호출
+ * - 브라우저: Firebase Functions 프록시(googleSearchProxy)를 통해 호출. API 키는 서버에만 존재.
+ * - Node(tsx 회귀 테스트 스크립트): SEARCH_API_KEY/SEARCH_ENGINE_ID로 직접 호출 (미설정 시 모의 결과).
  */
 async function callGoogleSearch(query: string): Promise<WebSearchResult[]> {
+  if (isBrowser) {
+    try {
+      const { httpsCallable } = await import("firebase/functions");
+      const { functions } = await import("../firebase");
+      const googleSearchProxy = httpsCallable<
+        { query: string },
+        { items: Array<{ title: string; link: string; displayLink: string; snippet: string }> }
+      >(functions, "googleSearchProxy");
+
+      const result = await googleSearchProxy({ query });
+      const items = result.data.items;
+
+      if (!items || items.length === 0) {
+        console.log("[WebSearch] No results found");
+        return [];
+      }
+
+      return mapGoogleItems(items, query);
+    } catch (error) {
+      console.error("[WebSearch] Functions 프록시 호출 실패:", error);
+      return getMockSearchResults(query);
+    }
+  }
+
   const { apiKey, searchEngineId, maxResults, timeout, language, country } = SEARCH_CONFIG;
 
   if (!apiKey || !searchEngineId) {
@@ -302,16 +350,7 @@ async function callGoogleSearch(query: string): Promise<WebSearchResult[]> {
       return [];
     }
 
-    return data.items.map(item => ({
-      title: item.title,
-      url: item.link,
-      domain: item.displayLink,
-      snippet: item.snippet,
-      relevance_score: calculateRelevanceScore(item, query),
-      credibility: evaluateDomainCredibility(item.displayLink),
-      is_government: isGovernmentDomain(item.displayLink),
-      is_pyeongtaek: isPyeongtaekDomain(item.displayLink)
-    }));
+    return mapGoogleItems(data.items, query);
 
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {

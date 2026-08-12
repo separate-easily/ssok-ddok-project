@@ -27,17 +27,16 @@ import type {
 // ========================================
 // 설정
 // ========================================
-// Node.js (tsx) 환경과 Vite 브라우저 환경 모두 지원
-const OPENAI_API_KEY =
-  (typeof import.meta !== "undefined" &&
-    (import.meta as any).env?.VITE_OPENAI_API_KEY) ||
-  process.env.VITE_OPENAI_API_KEY ||
-  "";
+// 브라우저에서는 Firebase Functions 프록시(chatWithAI)를 통해 OpenAI를 호출한다.
+// API 키는 서버(Functions secret)에만 존재하며 클라이언트 번들에는 절대 포함되지 않는다.
+const isBrowser = typeof window !== "undefined";
 
-// OpenAI API URL (Vite 프록시 사용하여 CORS 우회)
-const OPENAI_API_URL = "/api/openai/v1/chat/completions";
+// Node/tsx 회귀 테스트 스크립트 전용 키. VITE_ 접두사가 없으므로 Vite가
+// 브라우저 번들에 절대 포함시키지 않는다 (scripts/runEnhancedTestset.ts에서만 사용).
+const NODE_OPENAI_API_KEY =
+  (typeof process !== "undefined" && process.env?.OPENAI_API_KEY) || "";
 
-// 사용할 모델
+// 사용할 모델 (Node 전용 직접 호출 경로에서만 사용, 브라우저는 서버에서 결정)
 const OPENAI_MODEL = "gpt-4o-mini";
 
 // 재시도 설정
@@ -126,14 +125,6 @@ export interface ChatOptions {
 // ========================================
 
 /**
- * API 키를 마스킹하여 로그에 노출되지 않도록 함
- */
-const maskApiKey = (key: string): string => {
-  if (!key || key.length < 10) return "***";
-  return `${key.substring(0, 4)}...${key.substring(key.length - 4)}`;
-};
-
-/**
  * 지수 백오프로 재시도 지연 계산
  */
 const getRetryDelay = (attempt: number): number => {
@@ -160,6 +151,105 @@ const fetchWithTimeout = async (
   } finally {
     clearTimeout(timeoutId);
   }
+};
+
+/**
+ * OpenAI 호출 (브라우저 / Node 겸용)
+ * - 브라우저: Firebase Functions 프록시(chatWithAI)를 통해 호출. API 키는 서버에만 존재.
+ * - Node(tsx 회귀 테스트 스크립트): OPENAI_API_KEY(VITE_ 접두사 없음, 브라우저 번들 제외)로 직접 호출.
+ */
+const callOpenAIChat = async (
+  messages: Array<{ role: string; content: string }>,
+  maxTokens: number
+): Promise<string> => {
+  if (isBrowser) {
+    const { httpsCallable } = await import("firebase/functions");
+    const { functions } = await import("../firebase");
+    const chatWithAI = httpsCallable<
+      { messages: Array<{ role: string; content: string }>; maxTokens: number },
+      { reply: string }
+    >(functions, "chatWithAI");
+
+    try {
+      const result = await chatWithAI({ messages, maxTokens });
+      return result.data.reply;
+    } catch (error: any) {
+      throw new Error(error?.message || "AI 응답을 가져오지 못했습니다.");
+    }
+  }
+
+  if (!NODE_OPENAI_API_KEY) {
+    throw new Error(
+      "OPENAI_API_KEY가 설정되지 않았습니다. .env에 OPENAI_API_KEY(VITE_ 접두사 없이)를 추가해주세요."
+    );
+  }
+
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    try {
+      const response = await fetchWithTimeout(
+        "https://api.openai.com/v1/chat/completions",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${NODE_OPENAI_API_KEY}`,
+          },
+          body: JSON.stringify({
+            model: OPENAI_MODEL,
+            messages,
+            temperature: 0.7,
+            max_tokens: maxTokens,
+          }),
+        },
+        REQUEST_TIMEOUT
+      );
+
+      if (response.ok) {
+        const data = await response.json();
+        const content = data.choices?.[0]?.message?.content;
+        if (content) return content;
+        throw new Error("응답을 받지 못했습니다.");
+      }
+
+      const errorData = await response.json().catch(() => ({}));
+
+      if (response.status === 429 || response.status >= 500) {
+        const delay = getRetryDelay(attempt);
+        console.warn(`[ChatService] ${response.status} 에러, ${Math.round(delay)}ms 후 재시도...`);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        lastError = new Error(
+          response.status === 429
+            ? "오늘의 AI 사용량이 모두 소진되었어요 😢\n잠시 후 다시 시도하거나, 내일 다시 이용해 주세요!"
+            : `서버 오류 (${response.status})`
+        );
+        continue;
+      }
+
+      if (response.status === 401) {
+        throw new Error("API 키가 유효하지 않습니다.");
+      }
+
+      throw new Error(`API 요청 실패: ${response.status} - ${JSON.stringify(errorData)}`);
+    } catch (error) {
+      if (error instanceof Error) {
+        if (error.name === "AbortError") {
+          lastError = new Error("요청 시간이 초과되었습니다. 다시 시도해주세요.");
+        } else {
+          lastError = error;
+        }
+      }
+      if (attempt < MAX_RETRIES - 1) {
+        const delay = getRetryDelay(attempt);
+        console.warn(`[ChatService] 에러 발생, ${Math.round(delay)}ms 후 재시도...`);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        continue;
+      }
+    }
+  }
+
+  throw lastError || new Error("알 수 없는 오류가 발생했습니다.");
 };
 
 /**
@@ -244,14 +334,7 @@ export const sendMessage = async (
 ): Promise<string> => {
   const { skipLocalMatch = false, validateSource = true } = options;
 
-  // 1. API 키 확인
-  if (!OPENAI_API_KEY) {
-    throw new Error(
-      "OpenAI API 키가 설정되지 않았습니다. .env 파일에 VITE_OPENAI_API_KEY를 설정해주세요."
-    );
-  }
-
-  // 2. 룰북 선매칭 시도 (비용 절감)
+  // 1. 룰북 선매칭 시도 (비용 절감)
   if (!skipLocalMatch && conversationHistory.length === 0) {
     const localResponse = tryLocalMatch(userMessage);
     if (localResponse) {
@@ -260,7 +343,7 @@ export const sendMessage = async (
     }
   }
 
-  // 3. OpenAI용 메시지 구성
+  // 2. OpenAI용 메시지 구성
   const systemPrompt = createFullSystemPrompt();
   const messages = [
     { role: "system", content: systemPrompt },
@@ -272,102 +355,16 @@ export const sendMessage = async (
     { role: "user", content: userMessage },
   ];
 
-  // 4. 재시도 로직이 있는 API 호출
-  let lastError: Error | null = null;
+  // 3. API 호출 (브라우저: Functions 프록시 / Node: 직접 호출)
+  const content = await callOpenAIChat(messages, 1500);
 
-  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-    try {
-      console.log(
-        `[ChatService] OpenAI API 호출 시도 ${attempt + 1}/${MAX_RETRIES}`,
-        `(API Key: ${maskApiKey(OPENAI_API_KEY)})`
-      );
-
-      const response = await fetchWithTimeout(
-        OPENAI_API_URL,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${OPENAI_API_KEY}`,
-          },
-          body: JSON.stringify({
-            model: OPENAI_MODEL,
-            messages: messages,
-            temperature: 0.7,
-            max_tokens: 1500,
-          }),
-        },
-        REQUEST_TIMEOUT
-      );
-
-      // 성공 응답 처리
-      if (response.ok) {
-        const data = await response.json();
-
-        if (data.choices && data.choices.length > 0) {
-          const content = data.choices[0].message.content;
-
-          // 근거 검증 (옵션)
-          if (validateSource && !validateSourceInResponse(content)) {
-            console.warn("[ChatService] 응답에 유효한 근거가 없음");
-            // 근거가 없어도 응답은 반환 (프롬프트에서 강제하므로 대부분 포함됨)
-          }
-
-          return content;
-        }
-
-        throw new Error("응답을 받지 못했습니다.");
-      }
-
-      // 에러 응답 처리
-      const errorData = await response.json().catch(() => ({}));
-
-      // 재시도 가능한 에러 (429, 5xx)
-      if (response.status === 429 || response.status >= 500) {
-        const delay = getRetryDelay(attempt);
-        console.warn(
-          `[ChatService] ${response.status} 에러, ${Math.round(delay)}ms 후 재시도...`
-        );
-        await new Promise((resolve) => setTimeout(resolve, delay));
-        lastError = new Error(
-          response.status === 429
-            ? "오늘의 AI 사용량이 모두 소진되었어요 😢\n잠시 후 다시 시도하거나, 내일 다시 이용해 주세요!"
-            : `서버 오류 (${response.status})`
-        );
-        continue;
-      }
-
-      // 재시도 불가능한 에러
-      if (response.status === 401) {
-        throw new Error("API 키가 유효하지 않습니다.");
-      }
-
-      throw new Error(
-        `API 요청 실패: ${response.status} - ${JSON.stringify(errorData)}`
-      );
-    } catch (error) {
-      // 타임아웃 또는 네트워크 에러
-      if (error instanceof Error) {
-        if (error.name === "AbortError") {
-          lastError = new Error("요청 시간이 초과되었습니다. 다시 시도해주세요.");
-        } else {
-          lastError = error;
-        }
-      }
-
-      // 마지막 시도가 아니면 재시도
-      if (attempt < MAX_RETRIES - 1) {
-        const delay = getRetryDelay(attempt);
-        console.warn(`[ChatService] 에러 발생, ${Math.round(delay)}ms 후 재시도...`);
-        await new Promise((resolve) => setTimeout(resolve, delay));
-        continue;
-      }
-    }
+  // 4. 근거 검증 (옵션)
+  if (validateSource && !validateSourceInResponse(content)) {
+    console.warn("[ChatService] 응답에 유효한 근거가 없음");
+    // 근거가 없어도 응답은 반환 (프롬프트에서 강제하므로 대부분 포함됨)
   }
 
-  // 모든 재시도 실패
-  console.error("[ChatService] 모든 재시도 실패");
-  throw lastError || new Error("알 수 없는 오류가 발생했습니다.");
+  return content;
 };
 
 // ========================================
@@ -384,14 +381,7 @@ export const sendEnhancedMessage = async (
 ): Promise<EnhancedChatResponse> => {
   const startTime = Date.now();
 
-  // 1. API 키 확인
-  if (!OPENAI_API_KEY) {
-    throw new Error(
-      "OpenAI API 키가 설정되지 않았습니다. .env 파일에 VITE_OPENAI_API_KEY를 설정해주세요."
-    );
-  }
-
-  // 2. 3-Tier 지식 라우팅 실행
+  // 1. 3-Tier 지식 라우팅 실행
   console.log("[ChatService] 3-Tier Knowledge Routing 시작...");
   const routingResult = await routeKnowledge(userMessage);
   console.log("[ChatService] 라우팅 결과:", {
@@ -401,10 +391,10 @@ export const sendEnhancedMessage = async (
     needsClarification: routingResult.needs_clarification
   });
 
-  // 3. 지식 컨텍스트 생성
+  // 2. 지식 컨텍스트 생성
   const knowledgeContext = await generateKnowledgeContext(userMessage, routingResult);
 
-  // 4. 시스템 프롬프트에 지식 컨텍스트 주입
+  // 3. 시스템 프롬프트에 지식 컨텍스트 주입
   const fullSystemPrompt = `${SYSTEM_PROMPT}
 
 ---
@@ -416,7 +406,7 @@ ${generateRulebookContext()}
 [이번 질문에 대한 지식 라우팅 결과]
 ${knowledgeContext}`;
 
-  // 5. OpenAI용 메시지 구성
+  // 4. OpenAI용 메시지 구성
   const messages = [
     { role: "system", content: fullSystemPrompt },
     // 대화 이력
@@ -427,114 +417,31 @@ ${knowledgeContext}`;
     { role: "user", content: userMessage },
   ];
 
-  // 6. API 호출
-  let lastError: Error | null = null;
+  // 5. API 호출 (브라우저: Functions 프록시 / Node: 직접 호출)
+  const content = await callOpenAIChat(messages, 2000);
+  const processingTime = Date.now() - startTime;
 
-  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-    try {
-      console.log(
-        `[ChatService Enhanced] OpenAI API 호출 시도 ${attempt + 1}/${MAX_RETRIES}`
-      );
+  // 6. EnhancedChatResponse 빌드
+  const enhancedResponse = buildEnhancedResponse(content, routingResult, processingTime);
 
-      const response = await fetchWithTimeout(
-        OPENAI_API_URL,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${OPENAI_API_KEY}`,
-          },
-          body: JSON.stringify({
-            model: OPENAI_MODEL,
-            messages: messages,
-            temperature: 0.7,
-            max_tokens: 2000,
-          }),
-        },
-        REQUEST_TIMEOUT
-      );
-
-      if (response.ok) {
-        const data = await response.json();
-
-        if (data.choices && data.choices.length > 0) {
-          const content = data.choices[0].message.content;
-          const processingTime = Date.now() - startTime;
-
-          // 7. EnhancedChatResponse 빌드
-          const enhancedResponse = buildEnhancedResponse(
-            content,
-            routingResult,
-            processingTime
-          );
-
-          // 8. Tier3 (WEB_GENERAL) 사용 시 안전 문장 추가
-          if (isTier3Used(enhancedResponse.knowledge_sources, enhancedResponse.confidence.tier_used)) {
-            enhancedResponse.answer = appendTier3SafetyDisclaimer(enhancedResponse.answer);
-            console.log("[ChatService Enhanced] Tier3 안전 문장 추가됨");
-          }
-
-          console.log("[ChatService Enhanced] 응답 생성 완료", {
-            tier: enhancedResponse.confidence.tier_used,
-            confidence: enhancedResponse.confidence.overall,
-            sources: enhancedResponse.knowledge_sources,
-            processingTime: `${processingTime}ms`
-          });
-
-          // TODO: 여기에 전화번호/URL 후처리 확장 포인트
-          // 프론트엔드에서 ContactInfoExtension을 사용하여 동적으로 추가 가능
-          // 예: enhancedResponse.answer += formatContactInfo(getContactInfo());
-
-          return enhancedResponse;
-        }
-
-        throw new Error("응답을 받지 못했습니다.");
-      }
-
-      // 에러 처리
-      const errorData = await response.json().catch(() => ({}));
-
-      if (response.status === 429 || response.status >= 500) {
-        const delay = getRetryDelay(attempt);
-        console.warn(
-          `[ChatService Enhanced] OpenAI ${response.status} 에러, ${Math.round(delay)}ms 후 재시도...`
-        );
-        await new Promise((resolve) => setTimeout(resolve, delay));
-        lastError = new Error(
-          response.status === 429
-            ? "오늘의 AI 사용량이 모두 소진되었어요 😢\n잠시 후 다시 시도하거나, 내일 다시 이용해 주세요!"
-            : `서버 오류 (${response.status})`
-        );
-        continue;
-      }
-
-      if (response.status === 401) {
-        throw new Error("OpenAI API 키가 유효하지 않습니다.");
-      }
-
-      throw new Error(
-        `OpenAI API 요청 실패: ${response.status} - ${JSON.stringify(errorData)}`
-      );
-    } catch (error) {
-      if (error instanceof Error) {
-        if (error.name === "AbortError") {
-          lastError = new Error("요청 시간이 초과되었습니다. 다시 시도해주세요.");
-        } else {
-          lastError = error;
-        }
-      }
-
-      if (attempt < MAX_RETRIES - 1) {
-        const delay = getRetryDelay(attempt);
-        console.warn(`[ChatService Enhanced] OpenAI 에러 발생, ${Math.round(delay)}ms 후 재시도...`);
-        await new Promise((resolve) => setTimeout(resolve, delay));
-        continue;
-      }
-    }
+  // 7. Tier3 (WEB_GENERAL) 사용 시 안전 문장 추가
+  if (isTier3Used(enhancedResponse.knowledge_sources, enhancedResponse.confidence.tier_used)) {
+    enhancedResponse.answer = appendTier3SafetyDisclaimer(enhancedResponse.answer);
+    console.log("[ChatService Enhanced] Tier3 안전 문장 추가됨");
   }
 
-  console.error("[ChatService Enhanced] OpenAI 모든 재시도 실패");
-  throw lastError || new Error("알 수 없는 오류가 발생했습니다.");
+  console.log("[ChatService Enhanced] 응답 생성 완료", {
+    tier: enhancedResponse.confidence.tier_used,
+    confidence: enhancedResponse.confidence.overall,
+    sources: enhancedResponse.knowledge_sources,
+    processingTime: `${processingTime}ms`
+  });
+
+  // TODO: 여기에 전화번호/URL 후처리 확장 포인트
+  // 프론트엔드에서 ContactInfoExtension을 사용하여 동적으로 추가 가능
+  // 예: enhancedResponse.answer += formatContactInfo(getContactInfo());
+
+  return enhancedResponse;
 };
 
 /**
@@ -561,7 +468,10 @@ export const exampleQuestions = [
 ];
 
 export const isApiKeyConfigured = (): boolean => {
-  return !!OPENAI_API_KEY;
+  // 브라우저: 키는 서버(Functions secret)에만 존재하므로 항상 true.
+  //   실제 미설정 상태는 메시지 전송 시 호출 에러로 드러난다.
+  // Node(회귀 테스트 스크립트): 로컬 OPENAI_API_KEY 존재 여부로 판단.
+  return isBrowser ? true : !!NODE_OPENAI_API_KEY;
 };
 
 // 타입 재내보내기

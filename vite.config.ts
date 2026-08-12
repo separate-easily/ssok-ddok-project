@@ -16,15 +16,4 @@ export default defineConfig({
       '@': path.resolve(__dirname, './src'),
     },
   },
-  server: {
-    proxy: {
-      // OpenAI API 프록시 설정 (CORS 우회)
-      '/api/openai': {
-        target: 'https://api.openai.com',
-        changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/api\/openai/, ''),
-        secure: true,
-      },
-    },
-  },
 })
