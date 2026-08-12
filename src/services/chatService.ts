@@ -155,7 +155,7 @@ const fetchWithTimeout = async (
 
 /**
  * OpenAI 호출 (브라우저 / Node 겸용)
- * - 브라우저: Firebase Functions 프록시(chatWithAI)를 통해 호출. API 키는 서버에만 존재.
+ * - 브라우저: Vercel 서버리스 프록시(/api/chat)를 통해 호출. API 키는 서버에만 존재.
  * - Node(tsx 회귀 테스트 스크립트): OPENAI_API_KEY(VITE_ 접두사 없음, 브라우저 번들 제외)로 직접 호출.
  */
 const callOpenAIChat = async (
@@ -163,19 +163,26 @@ const callOpenAIChat = async (
   maxTokens: number
 ): Promise<string> => {
   if (isBrowser) {
-    const { httpsCallable } = await import("firebase/functions");
-    const { functions } = await import("../firebase");
-    const chatWithAI = httpsCallable<
-      { messages: Array<{ role: string; content: string }>; maxTokens: number },
-      { reply: string }
-    >(functions, "chatWithAI");
+    const response = await fetchWithTimeout(
+      "/api/chat",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-proxy-token": import.meta.env.VITE_PROXY_ACCESS_TOKEN ?? "",
+        },
+        body: JSON.stringify({ messages, maxTokens }),
+      },
+      REQUEST_TIMEOUT
+    );
 
-    try {
-      const result = await chatWithAI({ messages, maxTokens });
-      return result.data.reply;
-    } catch (error: any) {
-      throw new Error(error?.message || "AI 응답을 가져오지 못했습니다.");
+    const data = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      throw new Error(data?.error || "AI 응답을 가져오지 못했습니다.");
     }
+
+    return data.reply as string;
   }
 
   if (!NODE_OPENAI_API_KEY) {

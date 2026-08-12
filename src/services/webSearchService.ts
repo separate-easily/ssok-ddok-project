@@ -282,21 +282,31 @@ function mapGoogleItems(
 
 /**
  * Google Custom Search 호출
- * - 브라우저: Firebase Functions 프록시(googleSearchProxy)를 통해 호출. API 키는 서버에만 존재.
+ * - 브라우저: Vercel 서버리스 프록시(/api/search)를 통해 호출. API 키는 서버에만 존재.
  * - Node(tsx 회귀 테스트 스크립트): SEARCH_API_KEY/SEARCH_ENGINE_ID로 직접 호출 (미설정 시 모의 결과).
  */
 async function callGoogleSearch(query: string): Promise<WebSearchResult[]> {
   if (isBrowser) {
     try {
-      const { httpsCallable } = await import("firebase/functions");
-      const { functions } = await import("../firebase");
-      const googleSearchProxy = httpsCallable<
-        { query: string },
-        { items: Array<{ title: string; link: string; displayLink: string; snippet: string }> }
-      >(functions, "googleSearchProxy");
+      const response = await fetch("/api/search", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-proxy-token": (import.meta as any).env?.VITE_PROXY_ACCESS_TOKEN ?? "",
+        },
+        body: JSON.stringify({ query }),
+      });
 
-      const result = await googleSearchProxy({ query });
-      const items = result.data.items;
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        console.error("[WebSearch] 프록시 호출 실패:", data?.error);
+        return getMockSearchResults(query);
+      }
+
+      const items = data.items as
+        | Array<{ title: string; link: string; displayLink: string; snippet: string }>
+        | undefined;
 
       if (!items || items.length === 0) {
         console.log("[WebSearch] No results found");
@@ -305,7 +315,7 @@ async function callGoogleSearch(query: string): Promise<WebSearchResult[]> {
 
       return mapGoogleItems(items, query);
     } catch (error) {
-      console.error("[WebSearch] Functions 프록시 호출 실패:", error);
+      console.error("[WebSearch] 프록시 호출 실패:", error);
       return getMockSearchResults(query);
     }
   }

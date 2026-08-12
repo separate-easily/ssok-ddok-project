@@ -8,6 +8,7 @@ interface ImportMetaEnv {
   readonly VITE_FIREBASE_MESSAGING_SENDER_ID: string;
   readonly VITE_FIREBASE_APP_ID: string;
   readonly VITE_ENABLE_WEB_SEARCH: string;
+  readonly VITE_PROXY_ACCESS_TOKEN: string;
 }
 
 interface ImportMeta {
