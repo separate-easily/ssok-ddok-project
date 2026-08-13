@@ -43,7 +43,8 @@ export {
 } from "../data/knowledgeSchema";
 
 // Rulebook Types
-export type { Rule, Rulebook, SourceRef, ConditionTriggers } from "../data/rulebookSchema";
+export type { Rule, Rulebook, ConditionTriggers } from "../data/rulebookSchema";
+export type { SourceReference as SourceRef } from "../data/rulebookSchema";
 
 // Chat Service Types
 export type { ChatMessage, ChatResponse, ChatOptions } from "../services/chatService";

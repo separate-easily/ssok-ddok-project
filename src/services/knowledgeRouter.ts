@@ -114,7 +114,7 @@ function calculateConfidence(routerResult: RouterResult, query: string): number 
     confidence = 0.6;
 
     // 카테고리가 명확하면 +0.1
-    if (routerResult.category !== "unknown") {
+    if (routerResult.disposalCategory !== null) {
       confidence += 0.1;
     }
 
@@ -145,7 +145,7 @@ function calculateConfidence(routerResult: RouterResult, query: string): number 
       confidence += 0.05;
     }
 
-  } else if (routerResult.fallbackUsed) {
+  } else if (routerResult.fallbackMessage !== null) {
     // 폴백 사용 시 낮은 점수
     confidence = 0.25;
   }
