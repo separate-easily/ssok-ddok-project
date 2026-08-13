@@ -27,18 +27,19 @@ import type {
 // ========================================
 // 설정
 // ========================================
-// Node.js (tsx) 환경과 Vite 브라우저 환경 모두 지원
-const OPENAI_API_KEY =
-  (typeof import.meta !== "undefined" &&
-    (import.meta as any).env?.VITE_OPENAI_API_KEY) ||
-  process.env.VITE_OPENAI_API_KEY ||
-  "";
-
-// OpenAI API URL (Vite 프록시 사용하여 CORS 우회)
-const OPENAI_API_URL = "/api/openai/v1/chat/completions";
-
-// 사용할 모델
-const OPENAI_MODEL = "gpt-4o-mini";
+// AI 프록시 엔드포인트 (api/chat.ts 서버리스 함수)
+//
+// OpenAI API 키는 서버리스 함수에만 존재한다. 프런트엔드는 키를 알지 못하고
+// 같은 도메인의 /api/chat만 호출한다.
+//
+// Node.js (tsx) 스크립트에서는 상대 경로를 쓸 수 없으므로 .env의
+// VITE_CHAT_API_URL에 배포 주소를 넣어 덮어쓸 수 있게 해 둔다.
+// 주의: import.meta.env는 반드시 VITE_XXX로 정적 접근해야 한다. [key] 형태로
+// 동적 접근하면 Vite가 VITE_* 변수 전체를 번들에 통째로 넣는다.
+const CHAT_API_URL =
+  import.meta.env?.VITE_CHAT_API_URL ||
+  (typeof process !== "undefined" ? process.env.VITE_CHAT_API_URL : "") ||
+  "/api/chat";
 
 // 재시도 설정
 const MAX_RETRIES = 1; // 429 오류 방지를 위해 재시도 최소화
@@ -126,11 +127,11 @@ export interface ChatOptions {
 // ========================================
 
 /**
- * API 키를 마스킹하여 로그에 노출되지 않도록 함
+ * 프록시 서버가 내려준 에러 메시지를 꺼낸다.
+ * 서버는 { error: { message } } 형태로 응답한다.
  */
-const maskApiKey = (key: string): string => {
-  if (!key || key.length < 10) return "***";
-  return `${key.substring(0, 4)}...${key.substring(key.length - 4)}`;
+const extractErrorMessage = (data: any, fallback: string): string => {
+  return data?.error?.message || fallback;
 };
 
 /**
@@ -244,10 +245,10 @@ export const sendMessage = async (
 ): Promise<string> => {
   const { skipLocalMatch = false, validateSource = true } = options;
 
-  // 1. API 키 확인
-  if (!OPENAI_API_KEY) {
+  // 1. 프록시 서버 주소 확인
+  if (!CHAT_API_URL) {
     throw new Error(
-      "OpenAI API 키가 설정되지 않았습니다. .env 파일에 VITE_OPENAI_API_KEY를 설정해주세요."
+      "AI 서버 주소가 설정되지 않았습니다. .env 파일에 VITE_CHAT_API_URL을 설정해주세요."
     );
   }
 
@@ -260,7 +261,7 @@ export const sendMessage = async (
     }
   }
 
-  // 3. OpenAI용 메시지 구성
+  // 3. 프록시로 보낼 메시지 구성
   const systemPrompt = createFullSystemPrompt();
   const messages = [
     { role: "system", content: systemPrompt },
@@ -278,20 +279,17 @@ export const sendMessage = async (
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     try {
       console.log(
-        `[ChatService] OpenAI API 호출 시도 ${attempt + 1}/${MAX_RETRIES}`,
-        `(API Key: ${maskApiKey(OPENAI_API_KEY)})`
+        `[ChatService] AI 프록시 호출 시도 ${attempt + 1}/${MAX_RETRIES}`
       );
 
       const response = await fetchWithTimeout(
-        OPENAI_API_URL,
+        CHAT_API_URL,
         {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "Authorization": `Bearer ${OPENAI_API_KEY}`,
           },
           body: JSON.stringify({
-            model: OPENAI_MODEL,
             messages: messages,
             temperature: 0.7,
             max_tokens: 1500,
@@ -322,6 +320,13 @@ export const sendMessage = async (
       // 에러 응답 처리
       const errorData = await response.json().catch(() => ({}));
 
+      // 서버 설정 문제(키 미등록 등)는 재시도해도 소용없다
+      if (response.status === 503) {
+        throw new Error(
+          extractErrorMessage(errorData, "AI 서버가 아직 준비되지 않았습니다.")
+        );
+      }
+
       // 재시도 가능한 에러 (429, 5xx)
       if (response.status === 429 || response.status >= 500) {
         const delay = getRetryDelay(attempt);
@@ -332,18 +337,13 @@ export const sendMessage = async (
         lastError = new Error(
           response.status === 429
             ? "오늘의 AI 사용량이 모두 소진되었어요 😢\n잠시 후 다시 시도하거나, 내일 다시 이용해 주세요!"
-            : `서버 오류 (${response.status})`
+            : extractErrorMessage(errorData, `서버 오류 (${response.status})`)
         );
         continue;
       }
 
-      // 재시도 불가능한 에러
-      if (response.status === 401) {
-        throw new Error("API 키가 유효하지 않습니다.");
-      }
-
       throw new Error(
-        `API 요청 실패: ${response.status} - ${JSON.stringify(errorData)}`
+        extractErrorMessage(errorData, `AI 요청 실패: ${response.status}`)
       );
     } catch (error) {
       // 타임아웃 또는 네트워크 에러
@@ -384,10 +384,10 @@ export const sendEnhancedMessage = async (
 ): Promise<EnhancedChatResponse> => {
   const startTime = Date.now();
 
-  // 1. API 키 확인
-  if (!OPENAI_API_KEY) {
+  // 1. 프록시 서버 주소 확인
+  if (!CHAT_API_URL) {
     throw new Error(
-      "OpenAI API 키가 설정되지 않았습니다. .env 파일에 VITE_OPENAI_API_KEY를 설정해주세요."
+      "AI 서버 주소가 설정되지 않았습니다. .env 파일에 VITE_CHAT_API_URL을 설정해주세요."
     );
   }
 
@@ -416,7 +416,7 @@ ${generateRulebookContext()}
 [이번 질문에 대한 지식 라우팅 결과]
 ${knowledgeContext}`;
 
-  // 5. OpenAI용 메시지 구성
+  // 5. 프록시로 보낼 메시지 구성
   const messages = [
     { role: "system", content: fullSystemPrompt },
     // 대화 이력
@@ -433,19 +433,17 @@ ${knowledgeContext}`;
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     try {
       console.log(
-        `[ChatService Enhanced] OpenAI API 호출 시도 ${attempt + 1}/${MAX_RETRIES}`
+        `[ChatService Enhanced] AI 프록시 호출 시도 ${attempt + 1}/${MAX_RETRIES}`
       );
 
       const response = await fetchWithTimeout(
-        OPENAI_API_URL,
+        CHAT_API_URL,
         {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "Authorization": `Bearer ${OPENAI_API_KEY}`,
           },
           body: JSON.stringify({
-            model: OPENAI_MODEL,
             messages: messages,
             temperature: 0.7,
             max_tokens: 2000,
@@ -494,26 +492,29 @@ ${knowledgeContext}`;
       // 에러 처리
       const errorData = await response.json().catch(() => ({}));
 
+      // 서버 설정 문제(키 미등록 등)는 재시도해도 소용없다
+      if (response.status === 503) {
+        throw new Error(
+          extractErrorMessage(errorData, "AI 서버가 아직 준비되지 않았습니다.")
+        );
+      }
+
       if (response.status === 429 || response.status >= 500) {
         const delay = getRetryDelay(attempt);
         console.warn(
-          `[ChatService Enhanced] OpenAI ${response.status} 에러, ${Math.round(delay)}ms 후 재시도...`
+          `[ChatService Enhanced] 프록시 ${response.status} 에러, ${Math.round(delay)}ms 후 재시도...`
         );
         await new Promise((resolve) => setTimeout(resolve, delay));
         lastError = new Error(
           response.status === 429
             ? "오늘의 AI 사용량이 모두 소진되었어요 😢\n잠시 후 다시 시도하거나, 내일 다시 이용해 주세요!"
-            : `서버 오류 (${response.status})`
+            : extractErrorMessage(errorData, `서버 오류 (${response.status})`)
         );
         continue;
       }
 
-      if (response.status === 401) {
-        throw new Error("OpenAI API 키가 유효하지 않습니다.");
-      }
-
       throw new Error(
-        `OpenAI API 요청 실패: ${response.status} - ${JSON.stringify(errorData)}`
+        extractErrorMessage(errorData, `AI 요청 실패: ${response.status}`)
       );
     } catch (error) {
       if (error instanceof Error) {
@@ -526,14 +527,14 @@ ${knowledgeContext}`;
 
       if (attempt < MAX_RETRIES - 1) {
         const delay = getRetryDelay(attempt);
-        console.warn(`[ChatService Enhanced] OpenAI 에러 발생, ${Math.round(delay)}ms 후 재시도...`);
+        console.warn(`[ChatService Enhanced] 프록시 에러 발생, ${Math.round(delay)}ms 후 재시도...`);
         await new Promise((resolve) => setTimeout(resolve, delay));
         continue;
       }
     }
   }
 
-  console.error("[ChatService Enhanced] OpenAI 모든 재시도 실패");
+  console.error("[ChatService Enhanced] 프록시 모든 재시도 실패");
   throw lastError || new Error("알 수 없는 오류가 발생했습니다.");
 };
 
@@ -560,8 +561,15 @@ export const exampleQuestions = [
   "PVC 비닐랩은 재활용되나요?",
 ];
 
+/**
+ * 챗봇 사용 준비가 됐는지 확인
+ *
+ * API 키는 프록시 서버가 들고 있으므로 프런트엔드에서는 확인할 수 없다.
+ * 여기서는 프록시 주소가 설정됐는지만 검사하고, 키 문제는 서버가 내려주는
+ * 에러 메시지로 전달된다.
+ */
 export const isApiKeyConfigured = (): boolean => {
-  return !!OPENAI_API_KEY;
+  return !!CHAT_API_URL;
 };
 
 // 타입 재내보내기

@@ -92,7 +92,7 @@ const ChatbotPage = () => {
     handleSend(question);
   };
 
-  // API 키 미설정 시 안내
+  // AI 서버 주소 미설정 시 안내
   if (!isApiKeyConfigured()) {
     return (
       <div className="flex flex-col h-screen bg-[#F8F9FA] max-w-[430px] mx-auto font-pretendard">
@@ -100,11 +100,11 @@ const ChatbotPage = () => {
         <main className="flex-1 flex flex-col items-center justify-center p-6">
           <div className="bg-white rounded-[32px] p-8 shadow-sm text-center">
             <AlertCircle size={48} className="text-orange-400 mx-auto mb-4" />
-            <h2 className="text-lg font-black text-gray-800 mb-2">API 키가 필요해요</h2>
+            <h2 className="text-lg font-black text-gray-800 mb-2">AI 서버 설정이 필요해요</h2>
             <p className="text-sm text-gray-500 mb-4 leading-relaxed">
-              챗봇을 사용하려면 OpenAI API 키가 필요합니다.<br />
+              챗봇을 사용하려면 AI 프록시 서버 주소가 필요합니다.<br />
               프로젝트 루트에 <code className="bg-gray-100 px-1.5 py-0.5 rounded text-xs">.env</code> 파일을 만들고<br />
-              <code className="bg-gray-100 px-1.5 py-0.5 rounded text-xs">VITE_OPENAI_API_KEY=sk-xxx</code><br />
+              <code className="bg-gray-100 px-1.5 py-0.5 rounded text-xs">VITE_CHAT_API_URL=https://...vercel.app/api/chat</code><br />
               형태로 추가해주세요.
             </p>
           </div>

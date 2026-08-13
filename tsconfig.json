@@ -21,8 +21,9 @@
     "noFallthroughCasesInSwitch": true,
 
     /* Types */
-    "types": ["vite/client"]
+    /* node: api/ 서버리스 함수와 scripts/ 에서 process 등을 사용한다 */
+    "types": ["vite/client", "node"]
   },
-  "include": ["src"],
+  "include": ["src", "api"],
   "references": [{ "path": "./tsconfig.node.json" }]
 }

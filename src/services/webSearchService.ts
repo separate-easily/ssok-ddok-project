@@ -18,21 +18,25 @@ import {
 
 // ==================== Configuration ====================
 
-// Node.js (tsx) 환경과 Vite 브라우저 환경 모두 지원
-const getEnvVar = (key: string): string => {
-  if (typeof import.meta !== "undefined" && (import.meta as any).env?.[key]) {
-    return (import.meta as any).env[key];
-  }
-  if (typeof process !== "undefined" && process.env?.[key]) {
-    return process.env[key] as string;
+/**
+ * 환경 변수 읽기 (Node.js/tsx + Vite 브라우저 양쪽 지원)
+ *
+ * 주의: import.meta.env에 [key] 형태로 동적 접근하면 Vite가 VITE_* 변수
+ * 전체를 객체로 만들어 번들에 넣는다. 그러면 이 파일이 쓰지 않는 키까지
+ * 브라우저에 노출된다. 반드시 import.meta.env.VITE_XXX로 정적 접근할 것.
+ */
+const readEnv = (viteValue: string | undefined, nodeKey: string): string => {
+  if (viteValue) return viteValue;
+  if (typeof process !== "undefined" && process.env?.[nodeKey]) {
+    return process.env[nodeKey] as string;
   }
   return "";
 };
 
 const SEARCH_CONFIG = {
   // 환경 변수에서 API 키 로드
-  apiKey: getEnvVar("VITE_SEARCH_API_KEY"),
-  searchEngineId: getEnvVar("VITE_SEARCH_ENGINE_ID"),
+  apiKey: readEnv(import.meta.env?.VITE_SEARCH_API_KEY, "VITE_SEARCH_API_KEY"),
+  searchEngineId: readEnv(import.meta.env?.VITE_SEARCH_ENGINE_ID, "VITE_SEARCH_ENGINE_ID"),
 
   // 검색 설정
   maxResults: 5,
@@ -420,7 +424,8 @@ export async function searchWasteDisposal(userQuery: string): Promise<WebSearchR
  */
 export function isSearchEnabled(): boolean {
   // 환경 변수 확인
-  const envEnabled = getEnvVar("VITE_ENABLE_WEB_SEARCH") !== "false";
+  const envEnabled =
+    readEnv(import.meta.env?.VITE_ENABLE_WEB_SEARCH, "VITE_ENABLE_WEB_SEARCH") !== "false";
 
   // API 키 설정 확인 (없어도 mock으로 동작)
   return envEnabled;

@@ -430,10 +430,12 @@ async function main(): Promise<void> {
 
   // 환경 체크
   if (!config.dryRun) {
-    const apiKey = process.env.VITE_OPENAI_API_KEY;
-    if (!apiKey) {
-      console.error("Error: VITE_OPENAI_API_KEY environment variable is not set.");
+    // AI 호출은 Vercel 프록시 서버를 거친다 (OpenAI 키는 그 서버에만 존재)
+    const chatApiUrl = process.env.VITE_CHAT_API_URL;
+    if (!chatApiUrl) {
+      console.error("Error: VITE_CHAT_API_URL environment variable is not set.");
       console.error("Set it in .env file or export it before running.");
+      console.error("  예) VITE_CHAT_API_URL=https://ssok-ddok-api.vercel.app/api/chat");
       console.error("\nTip: Use --dry-run to test without API calls.");
       process.exit(1);
     }
