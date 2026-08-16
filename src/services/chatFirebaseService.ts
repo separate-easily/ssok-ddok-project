@@ -20,11 +20,6 @@ import {
 } from "firebase/firestore";
 
 // ========================================
-// 설정
-// ========================================
-const DAILY_LIMIT = 3; // 하루 최대 질문 수
-
-// ========================================
 // 타입 정의
 // ========================================
 export interface ChatMessage {
@@ -43,9 +38,6 @@ export interface ChatSession {
 
 export interface UsageInfo {
   used: number;
-  limit: number;
-  remaining: number;
-  canUse: boolean;
 }
 
 // ========================================
@@ -82,21 +74,10 @@ export const getDailyUsage = async (
 
     const used = usageSnap.exists() ? (usageSnap.data().count || 0) : 0;
 
-    return {
-      used,
-      limit: DAILY_LIMIT,
-      remaining: Math.max(0, DAILY_LIMIT - used),
-      canUse: used < DAILY_LIMIT,
-    };
+    return { used };
   } catch (error) {
     console.error("[ChatFirebase] 사용량 조회 실패:", error);
-    // 에러 시 사용 허용 (사용자 경험 우선)
-    return {
-      used: 0,
-      limit: DAILY_LIMIT,
-      remaining: DAILY_LIMIT,
-      canUse: true,
-    };
+    return { used: 0 };
   }
 };
 
@@ -303,6 +284,3 @@ export const getChatSession = async (
     return null;
   }
 };
-
-// 일일 한도 상수 내보내기
-export const CHAT_DAILY_LIMIT = DAILY_LIMIT;

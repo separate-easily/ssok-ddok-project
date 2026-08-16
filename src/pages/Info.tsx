@@ -10,7 +10,6 @@ import {
   incrementUsage,
   createChatSession,
   addMessageToSession,
-  CHAT_DAILY_LIMIT,
   type UsageInfo,
 } from "../services/chatFirebaseService";
 import type { EnhancedChatResponse } from "../data/knowledgeSchema";
@@ -99,12 +98,6 @@ const InfoPage: React.FC = () => {
   const handleSend = async (text?: string) => {
     const messageText = text || inputValue.trim();
     if (!messageText || isLoading) return;
-
-    // 사용량 체크
-    if (usageInfo && !usageInfo.canUse) {
-      setError(`오늘의 질문 횟수(${CHAT_DAILY_LIMIT}회)를 모두 사용했어요.\n내일 다시 이용해 주세요!`);
-      return;
-    }
 
     setError(null);
     setInputValue("");
@@ -328,23 +321,6 @@ const InfoPage: React.FC = () => {
               </p>
             </div>
 
-            {/* 사용량 안내 */}
-            {usageInfo && (
-              <div className="bg-white rounded-[20px] p-4 shadow-sm border border-gray-100">
-                <div className="flex items-center justify-between">
-                  <span className="text-sm font-bold text-gray-600">오늘 남은 질문</span>
-                  <span className={`text-lg font-black ${usageInfo.remaining > 0 ? "text-green-500" : "text-red-500"}`}>
-                    {usageInfo.remaining} / {usageInfo.limit}
-                  </span>
-                </div>
-                {usageInfo.remaining === 0 && (
-                  <p className="text-xs text-red-500 mt-2">
-                    오늘의 질문 횟수를 모두 사용했어요. 내일 다시 이용해 주세요!
-                  </p>
-                )}
-              </div>
-            )}
-
             {/* 지식 시스템 안내 */}
             <div className="bg-white rounded-[24px] p-5 shadow-sm border border-gray-100">
               <p className="text-xs font-black text-gray-400 uppercase tracking-widest mb-3">
@@ -376,7 +352,6 @@ const InfoPage: React.FC = () => {
                   <button
                     key={i}
                     onClick={() => handleExampleClick(q)}
-                    disabled={usageInfo?.remaining === 0}
                     className="bg-white px-4 py-2.5 rounded-2xl text-sm font-bold text-gray-600 shadow-sm border border-gray-100 active:scale-95 transition-all hover:border-green-200 hover:text-green-600 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     {q}
@@ -451,13 +426,8 @@ const InfoPage: React.FC = () => {
 
       {/* 입력 영역 - 하단 네비게이션 바 공간 확보 */}
       <div className="p-4 bg-white border-t border-gray-100 shrink-0 pb-20">
-        {/* 남은 횟수 표시 & 대화 초기화 */}
-        <div className="flex items-center justify-between mb-3">
-          {usageInfo && (
-            <span className={`text-xs font-bold ${usageInfo.remaining > 0 ? "text-gray-400" : "text-red-500"}`}>
-              오늘 남은 질문: {usageInfo.remaining}회
-            </span>
-          )}
+        {/* 대화 초기화 */}
+        <div className="flex items-center justify-end mb-3">
           {messages.length > 0 && (
             <button
               onClick={handleClear}
@@ -476,15 +446,15 @@ const InfoPage: React.FC = () => {
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
             onKeyPress={handleKeyPress}
-            placeholder={usageInfo?.remaining === 0 ? "오늘의 질문을 모두 사용했어요" : "어떤 쓰레기가 헷갈리세요?"}
-            disabled={isLoading || usageInfo?.remaining === 0}
+            placeholder="어떤 쓰레기가 헷갈리세요?"
+            disabled={isLoading}
             className="flex-1 bg-gray-50 rounded-2xl px-4 py-3.5 text-sm font-medium text-gray-800 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-green-200 disabled:opacity-50 transition-all"
           />
           <button
             onClick={() => handleSend()}
-            disabled={!inputValue.trim() || isLoading || usageInfo?.remaining === 0}
+            disabled={!inputValue.trim() || isLoading}
             className={`w-12 h-12 rounded-2xl flex items-center justify-center transition-all active:scale-95 ${
-              inputValue.trim() && !isLoading && usageInfo?.remaining !== 0
+              inputValue.trim() && !isLoading
                 ? "bg-green-500 text-white shadow-lg shadow-green-100"
                 : "bg-gray-100 text-gray-300"
             }`}

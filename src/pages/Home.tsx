@@ -1,9 +1,62 @@
 import React, { useState, useEffect } from 'react';
-import { Menu, Users, Gamepad2, Trophy, ShoppingBag, Webcam, ChevronRight, Sparkles, MapPin, ExternalLink } from 'lucide-react';
+import { Menu, Users, Gamepad2, Trophy, ShoppingBag, Webcam, ChevronRight, Sparkles, MapPin, ExternalLink, Recycle } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { auth, db } from '../firebase';
 import { doc, onSnapshot } from 'firebase/firestore';
 import Footer from '../components/Footer';
+
+interface Place {
+  id: string;
+  tag: string;
+  benefit: string;
+  title: string;
+  description: string;
+  address: string;
+  link: string;
+}
+
+// 오썸플렉스 카드와 동일한 레이아웃을 재사용하기 위한 공용 카드 컴포넌트
+const PlaceCard = ({ place, badgeColor }: { place: Place; badgeColor: string }) => (
+  <div className="bg-white rounded-[32px] border border-gray-100 shadow-sm overflow-hidden">
+    <div className="p-6">
+      <div className="flex justify-between items-start mb-4">
+        <div>
+          <div className="flex items-center gap-1.5 mb-1">
+            <span className={`${badgeColor} text-white text-[9px] font-black px-2 py-0.5 rounded-md uppercase`}>
+              {place.tag}
+            </span>
+            <span className={`${badgeColor.replace('bg-', 'text-')} text-[9px] font-black uppercase tracking-widest leading-none`}>
+              {place.benefit}
+            </span>
+          </div>
+          <h4 className="text-lg font-black text-gray-800">{place.title}</h4>
+        </div>
+      </div>
+
+      <p className="text-xs text-gray-500 font-medium leading-relaxed mb-4">
+        {place.description}
+      </p>
+
+      <div className="space-y-2 border-t border-gray-50 pt-4">
+        <div className="flex items-start gap-2 mb-5">
+          <MapPin size={12} className="text-gray-400 mt-0.2 shrink-0" />
+          <p className="text-[11px] text-gray-400 font-bold leading-tight">
+            {place.address}
+          </p>
+        </div>
+
+        <a
+          href={place.link}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="w-full bg-gray-50 hover:bg-gray-100 text-gray-600 py-3.5 rounded-2xl font-black text-[12px] transition-all flex items-center justify-center gap-2 shadow-sm"
+        >
+          공식 홈페이지에서 확인하기 <ExternalLink size={14} />
+        </a>
+      </div>
+    </div>
+  </div>
+);
 
 const HomePage = () => {
   const navigate = useNavigate();
@@ -23,6 +76,46 @@ const HomePage = () => {
       link: 'http://www.5someplex.com/intro/facility/index.jsp', // 외부 웹사이트 주소
     },
     // 나중에 새로운 장소가 생기면 여기에 객체를 추가하기만 하면 됩니다.
+  ];
+
+  // ♻️ 평택시 내 환경 관련 센터·시설 데이터 (현재 운영 중인 곳만 등록)
+  const environmentalPlaces: Place[] = [
+    {
+      id: 'peec',
+      tag: '환경교육',
+      benefit: '무료 체험 프로그램',
+      title: '평택환경교육센터',
+      description: '평택시가 지정한 환경교육 플랫폼으로, 자원순환 체험존과 업사이클 체험존 등 다양한 환경교육 프로그램을 운영합니다.',
+      address: '경기도 평택시 고덕면 도시지원1길 91 (오썸플렉스 일대)',
+      link: 'https://peec.or.kr/',
+    },
+    {
+      id: 'pt-eco-center',
+      tag: '재활용 시설',
+      benefit: '생활자원 회수·선별',
+      title: '평택에코센터 생활자원회수센터',
+      description: '파지·금속류·유리병류·플라스틱류·스티로폼 등 재활용품을 선별·처리하는 평택시 생활자원회수시설입니다.',
+      address: '경기도 평택시 고덕면 도시지원1길 91 · 031-8024-3721',
+      link: 'https://www.pyeongtaek.go.kr/pyeongtaek/contents.do?mId=1601060000',
+    },
+    {
+      id: 'pt-recycle-anjung',
+      tag: '중고알뜰매장',
+      benefit: '저렴하게 재구매',
+      title: '평택시 재활용센터 안중점',
+      description: '고장 난 가전·가구를 무상·유상으로 수거해 수리한 뒤 저렴하게 재판매하는 평택시 운영 재활용센터입니다. 배달 및 구입 후 6개월 A/S가 가능합니다.',
+      address: '경기도 평택시 안중읍 서동대로 1731-1 (하이마트 맞은편) · 031-681-2707',
+      link: 'https://www.pyeongtaek.go.kr/pyeongtaek/contents.do?mId=1601060000',
+    },
+    {
+      id: 'pt-recycle-milwol',
+      tag: '중고알뜰매장',
+      benefit: '저렴하게 재구매',
+      title: '평택시 재활용센터 (밀월로점)',
+      description: '고장 난 가전·가구를 무상·유상으로 수거해 수리한 뒤 저렴하게 재판매하는 평택시 운영 재활용센터입니다.',
+      address: '경기도 평택시 밀월로 15번길 83-16 · 031-665-4589',
+      link: 'https://www.pyeongtaek.go.kr/pyeongtaek/contents.do?mId=1601060000',
+    },
   ];
 
   useEffect(() => {
@@ -136,46 +229,21 @@ const HomePage = () => {
           </div>
 
           {recommendationPlaces.map((place) => (
-            <div key={place.id} className="bg-white rounded-[32px] border border-gray-100 shadow-sm overflow-hidden">
-              <div className="p-6">
-                <div className="flex justify-between items-start mb-4">
-                  <div>
-                    <div className="flex items-center gap-1.5 mb-1">
-                      <span className="bg-blue-500 text-white text-[9px] font-black px-2 py-0.5 rounded-md uppercase">
-                        {place.tag}
-                      </span>
-                      <span className="text-blue-500 text-[9px] font-black uppercase tracking-widest leading-none">
-                        {place.benefit}
-                      </span>
-                    </div>
-                    <h4 className="text-lg font-black text-gray-800">{place.title}</h4>
-                  </div>
-                </div>
+            <PlaceCard key={place.id} place={place} badgeColor="bg-blue-500" />
+          ))}
+        </section>
 
-                <p className="text-xs text-gray-500 font-medium leading-relaxed mb-4">
-                  {place.description}
-                </p>
+        {/* 3. 평택시 환경 관련 센터·시설 (현재 운영 중인 곳만) */}
+        <section className="space-y-4 mt-12">
+          <div className="flex items-center justify-between px-2">
+            <h3 className="text-sm font-black text-gray-800 flex items-center gap-2">
+              <Recycle size={16} className="text-green-500" /> 우리 동네 환경 시설
+            </h3>
+            <span className="text-[10px] font-bold text-gray-400 uppercase italic">Eco Facilities</span>
+          </div>
 
-                <div className="space-y-2 border-t border-gray-50 pt-4">
-                  <div className="flex items-start gap-2 mb-5">
-                    <MapPin size={12} className="text-gray-400 mt-0.2 shrink-0" />
-                    <p className="text-[11px] text-gray-400 font-bold leading-tight">
-                      {place.address}
-                    </p>
-                  </div>
-
-                  {/* 외부 연결용 a 태그 버튼 */}
-                  <a
-                    href={place.link}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="w-full bg-gray-50 hover:bg-gray-100 text-gray-600 py-3.5 rounded-2xl font-black text-[12px] transition-all flex items-center justify-center gap-2 shadow-sm"
-                  >
-                    공식 홈페이지에서 확인하기 <ExternalLink size={14} />
-                  </a>
-                </div>
-              </div>
-            </div>
+          {environmentalPlaces.map((place) => (
+            <PlaceCard key={place.id} place={place} badgeColor="bg-green-500" />
           ))}
         </section>
 
